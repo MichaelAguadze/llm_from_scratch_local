@@ -361,6 +361,8 @@ def main() -> int:
     ap.add_argument("--source", choices=sorted(C.SOURCES))
     ap.add_argument("--report", action="store_true", help="analyse, write nothing")
     ap.add_argument("--no-contam", action="store_true")
+    ap.add_argument("--minhash", default="case-law",
+                    help="comma-separated sources to near-dedup, or 'all'")
     args = ap.parse_args()
 
     C.ensure_dirs()
@@ -374,7 +376,11 @@ def main() -> int:
               f"({_CONTAM.nbytes/1e6:.0f} MB, fork-shared)", flush=True)
 
     stats = [
-        process_source(n, want_minhash=(n == "case-law"), report_only=args.report)
+        process_source(
+            n,
+            want_minhash=(args.minhash == "all" or n in args.minhash.split(",")),
+            report_only=args.report,
+        )
         for n in names
     ]
 

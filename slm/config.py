@@ -64,9 +64,12 @@ class Source:
 #                             541,371 docs = 2.25B tokens, not the 7B assumed
 #   after Phase 2     4.12B   -122,245 docs: 17,671 duplicates + 104,574
 #                             contaminated against LexGLUE/CaseHOLD
+#   after Phase 3     3.55B   not a data loss - the real tokenizer compresses
+#                             at 4.65 chars/token, not the 4.0 assumed. Phase 4
+#                             replaces this estimate with an exact count.
 # Weights below are the achieved mix, not the original plan.
 # See docs/01-data.md and docs/02-dedup.md.
-TOKEN_BUDGET_B: float = 4.124
+TOKEN_BUDGET_B: float = 3.548
 
 SOURCES: dict[str, Source] = {
     "case-law": Source(
@@ -82,9 +85,21 @@ SOURCES: dict[str, Source] = {
     ),
 }
 
-# Rough chars-per-token used only for budget accounting while streaming.
-# Replaced by the real measured ratio after Phase 3.
-CHARS_PER_TOKEN_ESTIMATE: float = 4.0
+# MEASURED in Phase 3 over every shard (250 docs each) with the trained
+# tokenizer, weighted by each source's char count:
+#   case-law 4.479 | sec 5.037 | fineweb-edu 4.291 | corpus-weighted 4.65
+# Was a 4.0 placeholder through Phases 1-2.
+CHARS_PER_TOKEN_ESTIMATE: float = 4.65
+
+# Total characters per source in CORPUS_DIR, measured after Phase 2. Needed to
+# weight any per-source statistic: SEC documents are ~40x longer than
+# fineweb-edu ones, so pooling a fixed doc count per source silently reports
+# SEC's number as the corpus average.
+CORPUS_CHARS: dict[str, float] = {
+    "case-law": 5.49e9,
+    "sec": 7.05e9,
+    "fineweb-edu": 3.96e9,
+}
 
 # ------------------------------------------------------------------ cleaning --
 
@@ -139,9 +154,25 @@ GRAD_ACCUM = 4
 N_GPU = 4
 TOKENS_PER_STEP = MICRO_BATCH * GRAD_ACCUM * N_GPU * SEQ_LEN  # 524_288
 
+def corpus_tokens() -> int:
+    """Authoritative training-token count.
+
+    Prefers the exact total written by Phase 4; falls back to the estimate in
+    TOKEN_BUDGET_B before Phase 4 has run. Deriving the schedule from a
+    hand-maintained constant is how a run silently trains on the wrong number
+    of steps, so this reads the real thing as soon as it exists.
+    """
+    idx = TRAIN_TOKENS_DIR / "index.json"
+    if idx.exists():
+        import json
+
+        return int(json.loads(idx.read_text())["total_tokens"])
+    return int(TOKEN_BUDGET_B * 1e9)
+
+
 EPOCHS = 5
-STEPS_PER_EPOCH = int(TOKEN_BUDGET_B * 1e9) // TOKENS_PER_STEP  # 7_865
-MAX_STEPS = STEPS_PER_EPOCH * EPOCHS  # 39_325
+STEPS_PER_EPOCH = corpus_tokens() // TOKENS_PER_STEP  # ~6_767 pre-Phase-4
+MAX_STEPS = STEPS_PER_EPOCH * EPOCHS  # ~33_835
 
 # The cosine schedule spans ALL epochs. Decaying over one epoch would leave
 # epochs 2-5 training at the LR floor. See SLM_BUILD_GUIDE.md Phase 5.
@@ -161,6 +192,15 @@ EVAL_EVERY_STEPS = 500
 EVAL_BATCHES = 100
 KEEP_LAST_N_CKPTS = 3
 EARLY_STOP_PATIENCE = 5  # evals without val improvement before stopping
+
+# Validation perplexity is reported PER SOURCE, but only these sources drive
+# early stopping. Measured in Phase 4: 19.3% of SEC val 40-grams also occur in
+# SEC train, because annual filings repeat whole sections verbatim and different
+# filers recite identical statutory language. case-law is 1.2% and fineweb-edu
+# 0.8%. SEC's val perplexity is therefore optimistic, and a memorisation
+# detector must not run on a partly-memorised signal. SEC still trains normally.
+EARLY_STOP_SOURCES: tuple[str, ...] = ("case-law", "fineweb-edu")
+EVAL_PER_SOURCE = True
 RESHUFFLE_EACH_EPOCH = True
 DATA_SEED = 1337  # per-epoch seed = DATA_SEED + epoch
 

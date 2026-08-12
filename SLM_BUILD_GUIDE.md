@@ -42,8 +42,8 @@ Measured, not assumed:
 **The headline:** this box is *stronger* than the single H100 the original guide
 budgeted \$15–25 for. 4× A6000 delivers roughly 120 TFLOP/s of usable bf16 —
 comparable to one H100 for a model this small, and you own it. The build cost
-becomes electricity: ~1.6 kW × ~44 h of GPU time (5 epochs) ≈ **70 kWh, call it
-\$9–14**.
+becomes electricity: ~1.6 kW × ~38 h of GPU time (5 epochs) ≈ **61 kWh, call it
+\$8–12**.
 
 **Storage is settled** (see Phase 0a for how): everything durable lives under
 `SLM_ROOT=/home/michael/slm-125m` on the root disk, which now has 120 GB free.
@@ -288,8 +288,8 @@ budget.** The multi-TB raw datasets are never materialized.
 
 At ~4 chars/token the achieved 5.25B tokens is ~21 GB of clean text, 6.0 GB
 gzipped on disk. Phase 2 then removes duplicates and benchmark contamination,
-leaving **4.124B** tokens = 164 tokens/parameter across 5 epochs (well past
-Chinchilla's ~20).
+leaving 4.124B tokens; Phase 3's measured tokenizer then puts the true count at
+**3.548B** = 141 tokens/parameter across 5 epochs (well past Chinchilla's ~20).
 
 **The cleaning pipeline** (fixed, rule-based, deterministic). Per document,
 cheapest check first; a drop ends the chain, and every drop is counted by reason:
@@ -362,7 +362,7 @@ signature *computation* out over `Pool(44)`.
 
 ---
 
-## Phase 3 — Train the tokenizer  (CPU, 20–40 min)
+## Phase 3 — Train the tokenizer  (CPU, **0.9 min actual**)
 
 A **fresh 16,384-token byte-level BPE** trained on the cleaned corpus.
 
@@ -372,6 +372,12 @@ A **fresh 16,384-token byte-level BPE** trained on the cleaned corpus.
   so a small vocab leaves more budget for the transformer layers.
 - Reserve the special tokens from `config.SPECIALS` at train time.
 - Save as a HuggingFace `PreTrainedTokenizerFast` at `$SLM_ROOT/tokenizer/`.
+
+> **Actual result:** trained in 0.9 min on a 3.2 GB proportional sample.
+> Measured compression **4.65 chars/token** corpus-weighted (case-law 4.479,
+> sec 5.037, fineweb 4.291), not the 4.0 assumed — so the corpus is **3.548B**
+> tokens and `steps/epoch` falls to 6,767. All 256 byte values round-trip with
+> zero UNK. See [docs/03-tokenizer.md](docs/03-tokenizer.md).
 
 **Local specifics:** the `tokenizers` trainer is Rust-threaded — it will use all
 48 threads on its own. Feed it a **sample**, not the whole corpus: ~2–5 GB of
@@ -390,7 +396,7 @@ check + measured compression (target: ~4 chars/token on legal text).
 
 ---
 
-## Phase 4 — Tokenize + split 99/1  (CPU, 1–2 h)
+## Phase 4 — Tokenize + split 99/1  (CPU, **5.9 min actual**)
 
 **The on-disk training format** — the concrete answer to "is there a specific
 data format?":
@@ -405,10 +411,23 @@ data format?":
 - Tokenization is **parallel: one worker per input shard** (`Pool(44)`), then
   merge + re-index. It reads only the local cleaned corpus, never HuggingFace.
 
-**The split:** deterministic **99 % train / 1 % val** — every 100th packed
-window goes to `$SLM_ROOT/tokens/val/`, the rest to `tokens/train/`. By-window
-and reproducible, so no validation window can leak into training. Result:
-~9.9B train + ~100M val tokens.
+**The split:** deterministic **99 % train / 1 % val**, by **document** — every
+100th document goes wholly to `$SLM_ROOT/tokens/val/`, the rest to
+`tokens/train/`.
+
+> **Deviation from the original plan, deliberate.** Splitting every 100th
+> *window* does not achieve the stated goal. Documents span 3–19 consecutive
+> windows here, so a val window sits inside a document whose neighbouring
+> windows are all in train — the model reads the text either side of the
+> held-out passage. Since val perplexity is the headline metric *and* drives
+> early stopping over 5 epochs, that ruler has to be clean. Splitting by
+> document costs nothing and actually delivers the guide's intent.
+
+**Actual result:** 3,535,785,984 train + 35.8M val tokens (1.00 %), 5.9 min.
+Audit found 19.3 % of SEC val n-grams also occur in SEC train — *corpus*
+redundancy, not split leakage (case-law 1.2 %, fineweb 0.8 %). Early stopping
+therefore runs on case-law + fineweb-edu only. See
+[docs/04-tokenize.md](docs/04-tokenize.md).
 
 **Local specific:** the training loader `np.memmap`s these shards. At 20 GB
 against 251 GB of RAM, the whole corpus ends up in page cache after the first
@@ -421,7 +440,7 @@ both simpler and faster here. Optionally pre-warm with
 
 ---
 
-## Phase 5 — Pretrain the 125M model  (4× A6000, 5 epochs, ~1.8 days)
+## Phase 5 — Pretrain the 125M model  (4× A6000, 5 epochs, ~1.6 days)
 
 ### Architecture (in `config.py`, maps 1:1 to `transformers.LlamaConfig`)
 
@@ -452,9 +471,9 @@ and 48 GB is plenty). Evaluate **perplexity** on `tokens/val/` every 500 steps.
 micro_batch 32 × seq 1024              =  32,768 tokens / GPU / fwd-bwd
 × 4 GPUs                               = 131,072 tokens / step-slice
 × grad_accum 4                         = 524,288 tokens / optimizer step  (~0.5M ✓)
-4.124B tokens ÷ 524,288                ≈   7,865 steps / epoch
-× 5 epochs                             ≈  39,325 total optimizer steps
-                                       =  20.6B tokens seen, 164 tokens/parameter
+3.548B tokens ÷ 524,288                ≈   6,767 steps / epoch
+× 5 epochs                             ≈  33,835 total optimizer steps
+                                       =  17.7B tokens seen, 141 tokens/parameter
 ```
 
 Micro-batch 32 uses roughly 12–16 GB of the 48 GB per card. There is headroom to
@@ -463,12 +482,12 @@ raising micro-batch means lowering `grad_accum`, not changing the recipe.
 
 ### What 5 epochs means (read before launching a 4-day run)
 
-Going from 1 → 5 epochs costs **5× the wall clock: ~44 h, about 1.8 days** on the
-final 4.124B corpus.
+Going from 1 → 5 epochs costs **5× the wall clock: ~38 h, about 1.6 days** on the
+final 3.548B corpus.
 Two things about it are worth understanding, because both change how you run it:
 
-- **It is over-training on purpose, and that's defensible.** 20.6B tokens on 125M
-  params is 164 tokens/parameter — ~8× Chinchilla-optimal. Chinchilla answers
+- **It is over-training on purpose, and that's defensible.** 17.7B tokens on 125M
+  params is 141 tokens/parameter — ~7× Chinchilla-optimal. Chinchilla answers
   "best model for a fixed training budget"; you're optimizing for a *small model
   that's good at inference*, which is the same reason modern small models are
   trained far past Chinchilla. Expect real gains over the 1-epoch run.
@@ -567,7 +586,7 @@ torchrun --standalone --nproc_per_node=4 -m slm.train \
   ```bash
   CUDA_VISIBLE_DEVICES=1,2,3 torchrun --standalone --nproc_per_node=3 -m slm.train
   ```
-  Three GPUs costs ~33 % wall clock (≈59 h instead of ≈44 h for 5 epochs). Adjust
+  Three GPUs costs ~33 % wall clock (≈51 h instead of ≈38 h for 5 epochs). Adjust
   `GRAD_ACCUM` to 5–6 to hold the global batch near 0.5M tokens.
 - **No NVLink is fine at this scale.** Gradient all-reduce moves ~250 MB (125M
   params, bf16) per optimizer step over PCIe 4.0 ×16 — tens of milliseconds
@@ -716,14 +735,14 @@ measured tokens/s and latency for a 256-token completion.
 | 0 Setup + smoke test | — | ~1 h |
 | 1 Stream + clean | 48T CPU, network-bound | **33 min actual** |
 | 2 Dedup + decontaminate | 48T CPU | **15 min actual** |
-| 3 Tokenizer | 48T CPU | 20–40 min |
-| 4 Tokenize + pack | 48T CPU | 1–2 h |
-| 5 Pretrain (5 epochs, 20.6B tokens) | 4× A6000 | ~44 h (~1.8 days) |
+| 3 Tokenizer | 48T CPU | **0.9 min actual** |
+| 4 Tokenize + pack | 48T CPU | **5.9 min actual** |
+| 5 Pretrain (5 epochs, 17.7B tokens) | 4× A6000 | ~38 h (~1.6 days) |
 | 6 Local serving | 1× A6000 or CPU | ~1 h |
 
 **Total ≈ 2.5–3 days wall clock**, most of it unattended in `tmux`. Marginal cost
-is electricity — roughly **70 kWh, \$9–14** — against well over \$40 for the
-equivalent 20.6B-token run on rented H100s. The
+is electricity — roughly **61 kWh, \$8–12** — against well over \$35 for the
+equivalent 17.7B-token run on rented H100s. The
 real difference isn't the money, it's that the corpus and the checkpoints stay
 on your disk and the next run costs nothing to start.
 
