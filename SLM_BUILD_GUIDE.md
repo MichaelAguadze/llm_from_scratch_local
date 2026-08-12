@@ -42,8 +42,8 @@ Measured, not assumed:
 **The headline:** this box is *stronger* than the single H100 the original guide
 budgeted \$15–25 for. 4× A6000 delivers roughly 120 TFLOP/s of usable bf16 —
 comparable to one H100 for a model this small, and you own it. The build cost
-becomes electricity: ~1.6 kW × ~107 h of GPU time (5 epochs) ≈ **170 kWh, call
-it \$20–35**.
+becomes electricity: ~1.6 kW × ~56 h of GPU time (5 epochs) ≈ **90 kWh, call it
+\$11–18**.
 
 **Storage is settled** (see Phase 0a for how): everything durable lives under
 `SLM_ROOT=/home/michael/slm-125m` on the root disk, which now has 120 GB free.
@@ -65,8 +65,8 @@ when you reach Phase 6. It is gitignored.
 
 All three source datasets are **ungated**, so streaming works without a token —
 but **set one before Phase 1 anyway.** The Hub applies much tighter rate limits
-to anonymous requests, and Phase 1 streams continuously for 8–24 h. Phase 0
-confirmed this warning fires on every unauthenticated request.
+to anonymous requests, and Phase 1 streams continuously at ~1.1M tokens/s.
+Phase 0 confirmed this warning fires on every unauthenticated request.
 
 Every phase script starts with `source .env.local`.
 
@@ -269,7 +269,7 @@ a passing 10-doc smoke test.
 
 ---
 
-## Phase 1 — Stream + clean  (CPU, ~8–24 h, network-bound)
+## Phase 1 — Stream + clean  (CPU, **33 min actual**, network-bound)
 
 **Stream, don't hoard.** HuggingFace `datasets` with `streaming=True`: pull
 documents one at a time, clean on the fly, **stop each source at its token
@@ -281,8 +281,14 @@ budget.** The multi-TB raw datasets are never materialized.
 | sec | `PleIAs/SEC` | 0.20 | `text` | 2B |
 | fineweb-edu | `HuggingFaceFW/fineweb-edu` (`sample-10BT`) | 0.10 | `text` | 1B |
 
-At ~4 chars/token, 10B tokens is ~40 GB of clean text — a few percent of the
-sources, and ~80 tokens/parameter for a 125M model (well past Chinchilla's ~20).
+> **Superseded by the actual run.** case-law holds only 541,371 docs (9.1 GB)
+> and exhausted at **2.251B**, not 7B. Final corpus is **5.25B** at 43 % legal /
+> 38 % financial / 19 % web; `config.TOKEN_BUDGET_B = 5.25`. Streaming took
+> **33 min**, not 8-24 h. See [docs/01-data.md](docs/01-data.md).
+
+At ~4 chars/token the achieved 5.25B tokens is ~21 GB of clean text, 6.0 GB
+gzipped on disk, and 209 tokens/parameter across 5 epochs (well past
+Chinchilla's ~20).
 
 **The cleaning pipeline** (fixed, rule-based, deterministic). Per document,
 cheapest check first; a drop ends the chain, and every drop is counted by reason:
@@ -404,7 +410,7 @@ both simpler and faster here. Optionally pre-warm with
 
 ---
 
-## Phase 5 — Pretrain the 125M model  (4× A6000, 5 epochs, ~4.5 days)
+## Phase 5 — Pretrain the 125M model  (4× A6000, 5 epochs, ~2.3 days)
 
 ### Architecture (in `config.py`, maps 1:1 to `transformers.LlamaConfig`)
 
@@ -435,9 +441,9 @@ and 48 GB is plenty). Evaluate **perplexity** on `tokens/val/` every 500 steps.
 micro_batch 32 × seq 1024              =  32,768 tokens / GPU / fwd-bwd
 × 4 GPUs                               = 131,072 tokens / step-slice
 × grad_accum 4                         = 524,288 tokens / optimizer step  (~0.5M ✓)
-10B tokens ÷ 524,288                   ≈  19,073 steps / epoch
-× 5 epochs                             ≈  95,365 total optimizer steps
-                                       =  50B tokens seen, 400 tokens/parameter
+5.25B tokens ÷ 524,288                 ≈  10,013 steps / epoch
+× 5 epochs                             ≈  50,065 total optimizer steps
+                                       =  26.2B tokens seen, 209 tokens/parameter
 ```
 
 Micro-batch 32 uses roughly 12–16 GB of the 48 GB per card. There is headroom to
@@ -446,11 +452,12 @@ raising micro-batch means lowering `grad_accum`, not changing the recipe.
 
 ### What 5 epochs means (read before launching a 4-day run)
 
-Going from 1 → 5 epochs costs **5× the wall clock: ~107 h, about 4.5 days.**
+Going from 1 → 5 epochs costs **5× the wall clock: ~56 h, about 2.3 days** on the
+final 5.25B corpus.
 Two things about it are worth understanding, because both change how you run it:
 
-- **It is over-training on purpose, and that's defensible.** 50B tokens on 125M
-  params is 400 tokens/parameter — 20× Chinchilla-optimal. Chinchilla answers
+- **It is over-training on purpose, and that's defensible.** 26.2B tokens on 125M
+  params is 209 tokens/parameter — ~10× Chinchilla-optimal. Chinchilla answers
   "best model for a fixed training budget"; you're optimizing for a *small model
   that's good at inference*, which is the same reason modern small models are
   trained far past Chinchilla. Expect real gains over the 1-epoch run.
@@ -549,7 +556,7 @@ torchrun --standalone --nproc_per_node=4 -m slm.train \
   ```bash
   CUDA_VISIBLE_DEVICES=1,2,3 torchrun --standalone --nproc_per_node=3 -m slm.train
   ```
-  Three GPUs costs ~33 % wall clock (≈143 h instead of ≈107 h for 5 epochs). Adjust
+  Three GPUs costs ~33 % wall clock (≈75 h instead of ≈56 h for 5 epochs). Adjust
   `GRAD_ACCUM` to 5–6 to hold the global batch near 0.5M tokens.
 - **No NVLink is fine at this scale.** Gradient all-reduce moves ~250 MB (125M
   params, bf16) per optimizer step over PCIe 4.0 ×16 — tens of milliseconds
@@ -696,16 +703,16 @@ measured tokens/s and latency for a 256-token completion.
 | Phase | Hardware | Wall clock |
 |---|---|---|
 | 0 Setup + smoke test | — | ~1 h |
-| 1 Stream + clean | 48T CPU, network-bound | 8–24 h |
+| 1 Stream + clean | 48T CPU, network-bound | **33 min actual** |
 | 2 Dedup + decontaminate | 48T CPU | 1–3 h |
 | 3 Tokenizer | 48T CPU | 20–40 min |
 | 4 Tokenize + pack | 48T CPU | 1–2 h |
-| 5 Pretrain (5 epochs, 50B tokens) | 4× A6000 | ~107 h (~4.5 days) |
+| 5 Pretrain (5 epochs, 26.2B tokens) | 4× A6000 | ~56 h (~2.3 days) |
 | 6 Local serving | 1× A6000 or CPU | ~1 h |
 
-**Total ≈ 5–6 days wall clock**, most of it unattended in `tmux`. Marginal cost
-is electricity — roughly **170 kWh, \$20–35** — against well over \$100 for the
-equivalent 50B-token run on rented H100s. The
+**Total ≈ 2.5–3 days wall clock**, most of it unattended in `tmux`. Marginal cost
+is electricity — roughly **90 kWh, \$11–18** — against well over \$50 for the
+equivalent 26B-token run on rented H100s. The
 real difference isn't the money, it's that the corpus and the checkpoints stay
 on your disk and the next run costs nothing to start.
 

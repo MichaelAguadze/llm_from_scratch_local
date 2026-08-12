@@ -15,11 +15,18 @@ from dotenv import load_dotenv
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_REPO_ROOT / ".env.local")
 
+# huggingface_hub and datasets authenticate off HF_TOKEN. Mirror our name onto
+# it so streaming is authenticated (anonymous requests are rate-limited, and
+# Phase 1 streams for hours).
+if os.environ.get("HUGGINGFACE_TOKEN") and not os.environ.get("HF_TOKEN"):
+    os.environ["HF_TOKEN"] = os.environ["HUGGINGFACE_TOKEN"]
+
 # --------------------------------------------------------------------- paths --
 
 SLM_ROOT = Path(os.environ.get("SLM_ROOT", "/home/michael/slm-125m"))
 
 CLEAN_DIR = SLM_ROOT / "clean"
+DEDUP_DIR = SLM_ROOT / "dedup"  # Phase 2 output; clean/ is never modified
 TOKENIZER_DIR = SLM_ROOT / "tokenizer"
 TOKENS_DIR = SLM_ROOT / "tokens"
 TRAIN_TOKENS_DIR = TOKENS_DIR / "train"
@@ -46,19 +53,23 @@ class Source:
         return int(TOKEN_BUDGET_B * 1e9 * self.weight)
 
 
-TOKEN_BUDGET_B: float = 10.0  # drop to 2.5 only if disk gets tight
+# ACTUAL corpus after Phase 1. The planned 10B at 70% legal proved impossible:
+# HFforLegal/case-law split 'us' holds only 541,371 docs (9.1 GB) = 2.25B tokens
+# total, so it exhausted at 2.251B against a 7B budget. Weights below are the
+# achieved mix, not the original plan. See docs/01-data.md.
+TOKEN_BUDGET_B: float = 5.25
 
 SOURCES: dict[str, Source] = {
     "case-law": Source(
-        hf_id="HFforLegal/case-law", split="us", field="document", weight=0.70
+        hf_id="HFforLegal/case-law", split="us", field="document", weight=0.43
     ),
-    "sec": Source(hf_id="PleIAs/SEC", split="train", field="text", weight=0.20),
+    "sec": Source(hf_id="PleIAs/SEC", split="train", field="text", weight=0.38),
     "fineweb-edu": Source(
         hf_id="HuggingFaceFW/fineweb-edu",
         split="train",
         config_name="sample-10BT",
         field="text",
-        weight=0.10,
+        weight=0.19,
     ),
 }
 
@@ -76,7 +87,11 @@ MAX_REPETITION_RATIO = 0.50
 NGRAM_N = 4
 LANGDETECT_PREFIX_CHARS = 5_000
 MIN_ASCII_RATIO = 0.90
-MAX_OCR_WORD_RATIO = 0.03
+# Measured on 179 kept case-law docs: median 0.0000, p99 0.0123, max 0.0152.
+# 0.02 sits above the observed distribution, so this is a safety net for badly
+# garbled docs rather than a primary filter — the OCR-heavy scans in this corpus
+# are short procedural orders already caught by the MIN_DOC_CHARS gate.
+MAX_OCR_WORD_RATIO = 0.02
 ENABLE_OCR_FILTER = True
 
 # ----------------------------------------------------------------- tokenizer --
@@ -153,6 +168,7 @@ def ensure_dirs() -> None:
     """Create every durable directory. Idempotent."""
     for d in (
         CLEAN_DIR,
+        DEDUP_DIR,
         TOKENIZER_DIR,
         TRAIN_TOKENS_DIR,
         VAL_TOKENS_DIR,
