@@ -27,6 +27,11 @@ SLM_ROOT = Path(os.environ.get("SLM_ROOT", "/home/michael/slm-125m"))
 
 CLEAN_DIR = SLM_ROOT / "clean"
 DEDUP_DIR = SLM_ROOT / "dedup"  # Phase 2 output; clean/ is never modified
+
+# Phases 3 and 4 train the tokenizer and pack tokens from the DEDUPLICATED,
+# decontaminated corpus. Reading CLEAN_DIR here would silently reintroduce the
+# 122,245 documents Phase 2 removed.
+CORPUS_DIR = DEDUP_DIR
 TOKENIZER_DIR = SLM_ROOT / "tokenizer"
 TOKENS_DIR = SLM_ROOT / "tokens"
 TRAIN_TOKENS_DIR = TOKENS_DIR / "train"
@@ -53,23 +58,27 @@ class Source:
         return int(TOKEN_BUDGET_B * 1e9 * self.weight)
 
 
-# ACTUAL corpus after Phase 1. The planned 10B at 70% legal proved impossible:
-# HFforLegal/case-law split 'us' holds only 541,371 docs (9.1 GB) = 2.25B tokens
-# total, so it exhausted at 2.251B against a 7B budget. Weights below are the
-# achieved mix, not the original plan. See docs/01-data.md.
-TOKEN_BUDGET_B: float = 5.25
+# ACTUAL corpus, measured after Phase 2.
+#   planned          10.00B   (70% legal)
+#   after Phase 1     5.25B   case-law exhausted: the dataset holds only
+#                             541,371 docs = 2.25B tokens, not the 7B assumed
+#   after Phase 2     4.12B   -122,245 docs: 17,671 duplicates + 104,574
+#                             contaminated against LexGLUE/CaseHOLD
+# Weights below are the achieved mix, not the original plan.
+# See docs/01-data.md and docs/02-dedup.md.
+TOKEN_BUDGET_B: float = 4.124
 
 SOURCES: dict[str, Source] = {
     "case-law": Source(
-        hf_id="HFforLegal/case-law", split="us", field="document", weight=0.43
+        hf_id="HFforLegal/case-law", split="us", field="document", weight=0.33
     ),
-    "sec": Source(hf_id="PleIAs/SEC", split="train", field="text", weight=0.38),
+    "sec": Source(hf_id="PleIAs/SEC", split="train", field="text", weight=0.43),
     "fineweb-edu": Source(
         hf_id="HuggingFaceFW/fineweb-edu",
         split="train",
         config_name="sample-10BT",
         field="text",
-        weight=0.19,
+        weight=0.24,
     ),
 }
 
@@ -131,8 +140,8 @@ N_GPU = 4
 TOKENS_PER_STEP = MICRO_BATCH * GRAD_ACCUM * N_GPU * SEQ_LEN  # 524_288
 
 EPOCHS = 5
-STEPS_PER_EPOCH = int(TOKEN_BUDGET_B * 1e9) // TOKENS_PER_STEP  # ~19_073
-MAX_STEPS = STEPS_PER_EPOCH * EPOCHS  # ~95_365
+STEPS_PER_EPOCH = int(TOKEN_BUDGET_B * 1e9) // TOKENS_PER_STEP  # 7_865
+MAX_STEPS = STEPS_PER_EPOCH * EPOCHS  # 39_325
 
 # The cosine schedule spans ALL epochs. Decaying over one epoch would leave
 # epochs 2-5 training at the LR floor. See SLM_BUILD_GUIDE.md Phase 5.

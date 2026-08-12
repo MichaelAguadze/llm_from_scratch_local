@@ -67,22 +67,36 @@ def word_hashes(words: list[str]) -> np.ndarray:
     )
 
 
-def ngram_hashes(words: list[str], k: int) -> np.ndarray:
-    """Rolling polynomial hash over k-word windows, vectorised. Sorted unique."""
+def ngram_hashes(words: list[str], k: int, bits: int = 64) -> np.ndarray:
+    """Rolling polynomial hash over k-word windows, vectorised. Sorted unique.
+
+    `bits` sets the hash space, and it matters more than it looks. A membership
+    test against an index of M entries has a false-match probability of
+    M / 2**bits per gram. For decontamination M is 27.5M and documents carry
+    ~4,400 grams, so 32 bits yields ~28 expected FALSE hits per document —
+    above any sane threshold, flagging essentially the whole corpus. 64 bits
+    drops that to ~1e-8. MinHash shingling compares ~4,400-element sets against
+    each other rather than a huge index, so 32 bits is harmless there.
+    """
     n = len(words)
     if n < k:
         return np.empty(0, dtype=np.uint64)
     wh = word_hashes(words)
     out = np.zeros(n - k + 1, dtype=np.uint64)
     mult = np.uint64(1_000_003)
-    mask = np.uint64(MAX_HASH)
-    for i in range(k):
-        out = (out * mult + wh[i : n - k + 1 + i]) & mask
+    use_mask = bits < 64
+    mask = np.uint64((1 << bits) - 1) if use_mask else None
+    with np.errstate(over="ignore"):  # uint64 wraparound is the intended mixing
+        for i in range(k):
+            out = out * mult + wh[i : n - k + 1 + i]
+            if use_mask:
+                out = out & mask
     return np.unique(out)
 
 
 def shingle_hashes(words: list[str]) -> np.ndarray:
-    return ngram_hashes(words, SHINGLE_WORDS)
+    # 32-bit: validated against ground-truth Jaccard, see docs/02-dedup.md
+    return ngram_hashes(words, SHINGLE_WORDS, bits=32)
 
 
 def minhash_signature(words: list[str]) -> np.ndarray | None:
@@ -230,7 +244,7 @@ def build_contamination_index() -> np.ndarray:
 
 
 def _ngram_hashes(text: str) -> np.ndarray:
-    return ngram_hashes(text.lower().split(), CONTAM_NGRAM)
+    return ngram_hashes(text.lower().split(), CONTAM_NGRAM, bits=64)
 
 
 # Set in the parent before forking; workers inherit it copy-on-write.

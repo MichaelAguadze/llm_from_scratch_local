@@ -42,8 +42,8 @@ Measured, not assumed:
 **The headline:** this box is *stronger* than the single H100 the original guide
 budgeted \$15–25 for. 4× A6000 delivers roughly 120 TFLOP/s of usable bf16 —
 comparable to one H100 for a model this small, and you own it. The build cost
-becomes electricity: ~1.6 kW × ~56 h of GPU time (5 epochs) ≈ **90 kWh, call it
-\$11–18**.
+becomes electricity: ~1.6 kW × ~44 h of GPU time (5 epochs) ≈ **70 kWh, call it
+\$9–14**.
 
 **Storage is settled** (see Phase 0a for how): everything durable lives under
 `SLM_ROOT=/home/michael/slm-125m` on the root disk, which now has 120 GB free.
@@ -287,7 +287,8 @@ budget.** The multi-TB raw datasets are never materialized.
 > **33 min**, not 8-24 h. See [docs/01-data.md](docs/01-data.md).
 
 At ~4 chars/token the achieved 5.25B tokens is ~21 GB of clean text, 6.0 GB
-gzipped on disk, and 209 tokens/parameter across 5 epochs (well past
+gzipped on disk. Phase 2 then removes duplicates and benchmark contamination,
+leaving **4.124B** tokens = 164 tokens/parameter across 5 epochs (well past
 Chinchilla's ~20).
 
 **The cleaning pipeline** (fixed, rule-based, deterministic). Per document,
@@ -334,13 +335,23 @@ dropped-by-reason, tokens estimated).
 
 ---
 
-## Phase 2 — Dedup + contamination strip  (CPU, 1–3 h)
+## Phase 2 — Dedup + contamination strip  (CPU, **15 min actual**)
 
 1. **Near-dedup** the dominant source (case-law) with **MinHash-LSH** — 5-word
    shingles → 64-num signature → LSH buckets, Jaccard 0.8. Drop near-duplicates;
    small sources pass through. Exact blake2b hashing is the fallback.
 2. **Strip eval contamination** — drop docs resembling the benchmark sets
    (LexGLUE / CaseHOLD) so held-out evaluation stays honest.
+
+> **Actual result:** 1,421,590 → 1,299,345 docs (91.4 %), 5.25B → **4.124B**
+> tokens, in 15 min. case-law showed 154 exact vs **11,756 near-duplicates** — a
+> 76× gap that vindicates scoping MinHash to it, and that exact hashing alone
+> would have missed entirely.
+>
+> **Decontamination n-gram hashing must be 64-bit.** At 32 bits against a
+> 27.5M-gram benchmark index, every document collides ~28 times by chance and
+> 83 % of the corpus is falsely flagged — silently, with no crash. See
+> [docs/02-dedup.md](docs/02-dedup.md).
 
 **Local specific:** with 251 GB of RAM, the entire MinHash signature table for
 ~10M documents (64 × uint32 = 256 B/doc ≈ 2.5 GB) lives comfortably in memory.
@@ -410,7 +421,7 @@ both simpler and faster here. Optionally pre-warm with
 
 ---
 
-## Phase 5 — Pretrain the 125M model  (4× A6000, 5 epochs, ~2.3 days)
+## Phase 5 — Pretrain the 125M model  (4× A6000, 5 epochs, ~1.8 days)
 
 ### Architecture (in `config.py`, maps 1:1 to `transformers.LlamaConfig`)
 
@@ -441,9 +452,9 @@ and 48 GB is plenty). Evaluate **perplexity** on `tokens/val/` every 500 steps.
 micro_batch 32 × seq 1024              =  32,768 tokens / GPU / fwd-bwd
 × 4 GPUs                               = 131,072 tokens / step-slice
 × grad_accum 4                         = 524,288 tokens / optimizer step  (~0.5M ✓)
-5.25B tokens ÷ 524,288                 ≈  10,013 steps / epoch
-× 5 epochs                             ≈  50,065 total optimizer steps
-                                       =  26.2B tokens seen, 209 tokens/parameter
+4.124B tokens ÷ 524,288                ≈   7,865 steps / epoch
+× 5 epochs                             ≈  39,325 total optimizer steps
+                                       =  20.6B tokens seen, 164 tokens/parameter
 ```
 
 Micro-batch 32 uses roughly 12–16 GB of the 48 GB per card. There is headroom to
@@ -452,12 +463,12 @@ raising micro-batch means lowering `grad_accum`, not changing the recipe.
 
 ### What 5 epochs means (read before launching a 4-day run)
 
-Going from 1 → 5 epochs costs **5× the wall clock: ~56 h, about 2.3 days** on the
-final 5.25B corpus.
+Going from 1 → 5 epochs costs **5× the wall clock: ~44 h, about 1.8 days** on the
+final 4.124B corpus.
 Two things about it are worth understanding, because both change how you run it:
 
-- **It is over-training on purpose, and that's defensible.** 26.2B tokens on 125M
-  params is 209 tokens/parameter — ~10× Chinchilla-optimal. Chinchilla answers
+- **It is over-training on purpose, and that's defensible.** 20.6B tokens on 125M
+  params is 164 tokens/parameter — ~8× Chinchilla-optimal. Chinchilla answers
   "best model for a fixed training budget"; you're optimizing for a *small model
   that's good at inference*, which is the same reason modern small models are
   trained far past Chinchilla. Expect real gains over the 1-epoch run.
@@ -556,7 +567,7 @@ torchrun --standalone --nproc_per_node=4 -m slm.train \
   ```bash
   CUDA_VISIBLE_DEVICES=1,2,3 torchrun --standalone --nproc_per_node=3 -m slm.train
   ```
-  Three GPUs costs ~33 % wall clock (≈75 h instead of ≈56 h for 5 epochs). Adjust
+  Three GPUs costs ~33 % wall clock (≈59 h instead of ≈44 h for 5 epochs). Adjust
   `GRAD_ACCUM` to 5–6 to hold the global batch near 0.5M tokens.
 - **No NVLink is fine at this scale.** Gradient all-reduce moves ~250 MB (125M
   params, bf16) per optimizer step over PCIe 4.0 ×16 — tens of milliseconds
@@ -704,15 +715,15 @@ measured tokens/s and latency for a 256-token completion.
 |---|---|---|
 | 0 Setup + smoke test | — | ~1 h |
 | 1 Stream + clean | 48T CPU, network-bound | **33 min actual** |
-| 2 Dedup + decontaminate | 48T CPU | 1–3 h |
+| 2 Dedup + decontaminate | 48T CPU | **15 min actual** |
 | 3 Tokenizer | 48T CPU | 20–40 min |
 | 4 Tokenize + pack | 48T CPU | 1–2 h |
-| 5 Pretrain (5 epochs, 26.2B tokens) | 4× A6000 | ~56 h (~2.3 days) |
+| 5 Pretrain (5 epochs, 20.6B tokens) | 4× A6000 | ~44 h (~1.8 days) |
 | 6 Local serving | 1× A6000 or CPU | ~1 h |
 
 **Total ≈ 2.5–3 days wall clock**, most of it unattended in `tmux`. Marginal cost
-is electricity — roughly **90 kWh, \$11–18** — against well over \$50 for the
-equivalent 26B-token run on rented H100s. The
+is electricity — roughly **70 kWh, \$9–14** — against well over \$40 for the
+equivalent 20.6B-token run on rented H100s. The
 real difference isn't the money, it's that the corpus and the checkpoints stay
 on your disk and the next run costs nothing to start.
 
