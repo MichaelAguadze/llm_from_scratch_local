@@ -94,7 +94,71 @@ Exact schedule read from `tokens/train/index.json`: 3,452,916 train windows,
 
 ## Full run
 
-Launched 2026-08-12, detached (`setsid nohup`), logging to
-`$SLM_ROOT/logs/05-pretrain.log`. Settled at ~2.05 s/step → **ETA ~19.2 h**.
+Launched 2026-08-12 14:43, detached (`setsid nohup`), logging to
+`$SLM_ROOT/logs/05-pretrain.log`. Finished 2026-08-13 10:44.
 
-_(final loss, per-source val perplexity and wall clock filled in after the run)_
+```
+done: 33,715 steps in 20.0 h, best clean val ppl 12.750
+```
+
+All 5 epochs ran to completion — **early stopping never fired**, clean val
+improved monotonically to the last eval. 17.7B tokens seen, 140 tokens/param.
+Steady state ~2.0 s/step at ~261k tok/s; the extra 1.5 h over the bench
+projection is the 67 eval + checkpoint pauses (~55 s each).
+
+### Validation perplexity, per source
+
+| Step | epoch | case-law | fineweb-edu | sec | clean |
+|---|---|---|---|---|---|
+| 500 | 0.07 | 34.07 | 91.35 | 17.99 | 55.79 |
+| 7,000 | 1.04 | 10.00 | 24.47 | 5.83 | 15.64 |
+| 13,500 | 2.00 | 9.19 | 22.11 | 5.31 | 14.25 |
+| 20,000 | 2.97 | 8.73 | 20.86 | 5.00 | 13.50 |
+| 27,000 | 4.00 | 8.41 | 19.98 | 4.74 | 12.96 |
+| 33,500 | 4.97 | **8.28** | **19.63** | **4.62** | **12.750** |
+
+Train loss 9.85 → ~2.05. The shape is the expected one: epoch 1 buys most of
+it (55.8 → 15.6), and epochs 2–5 return a further 18 % for four times the
+compute. SEC's 4.62 stays the most optimistic number of the three for the
+corpus-redundancy reason in Phase 4 — it is reported, not trusted.
+
+Gains were still real but small at the end (12.757 → 12.750 over the last 500
+steps), so the LR floor, not data exhaustion, is what the run ended on. A 6th
+epoch is not the move; streaming more tokens is (Phase 1 appends cleanly).
+
+### Artifacts
+
+| Path | Size | Notes |
+|---|---|---|
+| `checkpoints/base/` | 503 MB | HF safetensors + tokenizer, final step — the Phase 6 input |
+| `checkpoints/best.pt` | 1.5 GB | step 33,500, clean val 12.750 |
+| `checkpoints/last.pt` | 1.5 GB | step 33,715, resume point |
+| `checkpoints/step_0335*.pt` | 1.5 GB × 3 | rollback, last 3 kept |
+
+`best.pt` is step 33,500 because the final step (33,715) is not a multiple of
+`EVAL_EVERY_STEPS`, so no eval ran on it. `base/` holds the step-33,715 weights,
+215 steps newer than `best.pt` and 0.3 % of one epoch apart — untested against
+val but on a monotone curve. Ship `base/`.
+
+Disk after the run: 86 G free on `/`.
+
+### Sanity generations (bf16, temp 0.8, top-p 0.95)
+
+```
+The Court held that the evidence of the plaintiff's "intent" to deceive and
+defraud his wife was insufficient to support a finding of fraud against the
+plaintiff and in favor of the defendant on the issue of punitive damages.
+
+Item 1A. Risk Factors - Risks Associated with the Market for the Company's
+Common Stock and Related Stockholder Matters - Nasdaq Delisting and Potential
+Dilution. The Company's Common Stock trades on the Nasdaq National Market...
+
+Photosynthesis is the process that leads to photosynthesis. The process is
+described by Photosynthesis. Photosynthesis is used to make energy, which is
+then converted into chemical energy.
+```
+
+Legal and filing register are both convincing — unsurprising at 76 % of the
+mix. The fineweb-edu completion degenerates into definitional circling, which
+is what a 126M base model with no instruction tuning does on open-domain
+prompts, and matches fineweb-edu's 19.63 being 2.4× case-law's perplexity.
