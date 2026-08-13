@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slm-125m-base</title>
+<style>
+  :root {
+    --bg: #fbfaf8; --panel: #fff; --ink: #1c1b19; --muted: #6b675f;
+    --line: #e3ded5; --accent: #7a4a2b; --mono: ui-monospace, SFMono-Regular,
+      "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161513; --panel:#1e1d1a; --ink:#eceae5; --muted:#a29c91;
+            --line:#33302b; --accent:#d99a6c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55
+         system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 20px; margin: 0 0 2px; letter-spacing:-.01em; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .panel { background:var(--panel); border:1px solid var(--line);
+           border-radius:10px; padding:16px; margin-bottom:16px; }
+  textarea { width:100%; min-height:110px; resize:vertical; font:14px/1.5 var(--mono);
+             color:var(--ink); background:transparent; border:1px solid var(--line);
+             border-radius:8px; padding:10px; }
+  textarea:focus, select:focus, input:focus { outline:2px solid var(--accent);
+             outline-offset:1px; }
+  .controls { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
+              gap:12px; margin-top:12px; }
+  label { display:block; font-size:11px; text-transform:uppercase;
+          letter-spacing:.06em; color:var(--muted); margin-bottom:4px; }
+  input, select { width:100%; padding:6px 8px; font:13px var(--mono); color:var(--ink);
+          background:transparent; border:1px solid var(--line); border-radius:6px; }
+  .row { display:flex; align-items:center; gap:12px; margin-top:14px; flex-wrap:wrap; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:7px;
+           padding:9px 18px; font-size:14px; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  button.ghost { background:transparent; color:var(--muted);
+                 border:1px solid var(--line); font-weight:400; }
+  .stats { color:var(--muted); font:12px var(--mono); margin-left:auto; }
+  #out { font:14px/1.6 var(--mono); white-space:pre-wrap; word-wrap:break-word;
+         min-height:120px; }
+  #out .prompt { color:var(--muted); }
+  #out .cursor { display:inline-block; width:7px; height:15px; vertical-align:-2px;
+         background:var(--accent); animation:blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  details { margin-top:8px; }
+  summary { cursor:pointer; color:var(--muted); font-size:13px; }
+  .about { font-size:13.5px; color:var(--muted); }
+  .about p { margin:.7em 0; }
+  .about b { color:var(--ink); font-weight:600; }
+  code { font:12.5px var(--mono); background:rgba(128,128,128,.13);
+         padding:1px 5px; border-radius:4px; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+  .chip { font-size:12px; padding:4px 9px; border:1px solid var(--line);
+          border-radius:999px; color:var(--muted); cursor:pointer;
+          background:transparent; font-weight:400; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>slm-125m-base</h1>
+  <div class="sub" id="sub">loading…</div>
+
+  <div class="panel">
+    <label for="prompt">Prompt</label>
+    <textarea id="prompt" spellcheck="false">The Court held that</textarea>
+    <div class="chips">
+      <button class="chip" data-p="The Court held that">case law</button>
+      <button class="chip" data-p="Item 1A. Risk Factors">SEC filing</button>
+      <button class="chip" data-p="Photosynthesis is">general</button>
+      <button class="chip" data-p="IN THE UNITED STATES DISTRICT COURT FOR THE">caption</button>
+    </div>
+    <div class="controls">
+      <div><label for="max_new_tokens">max tokens</label>
+           <input id="max_new_tokens" type="number" value="256" min="1" max="1023"></div>
+      <div><label for="temperature">temperature</label>
+           <input id="temperature" type="number" value="0.8" step="0.05" min="0.05" max="2"></div>
+      <div><label for="top_p">top-p</label>
+           <input id="top_p" type="number" value="0.95" step="0.01" min="0.01" max="1"></div>
+      <div><label for="top_k">top-k</label>
+           <input id="top_k" type="number" value="50" min="0"></div>
+      <div><label for="repetition_penalty">rep. penalty</label>
+           <input id="repetition_penalty" type="number" value="1.1" step="0.05" min="1" max="2"></div>
+      <div><label for="document_start">start of doc</label>
+           <select id="document_start"><option value="false">no</option>
+           <option value="true">yes (&lt;|eos|&gt;)</option></select></div>
+    </div>
+    <div class="row">
+      <button id="go">Generate</button>
+      <button id="stop" class="ghost" disabled>Stop</button>
+      <span class="stats" id="stats"></span>
+    </div>
+  </div>
+
+  <div class="panel"><div id="out"></div></div>
+
+  <details class="panel">
+    <summary>What this is</summary>
+    <div class="about">
+      <p>A <b>126M-parameter Llama-style decoder</b> trained from scratch on this
+      machine: 3.55B tokens of US case law, SEC filings and fineweb-edu, 5 epochs
+      (17.7B tokens seen) on 4× RTX A6000 in 20 hours. 16,384-token byte-level
+      BPE, 1024-token context.</p>
+      <p>It is a <b>base completion model</b>, not a chat model. It continues your
+      text; it does not follow instructions, and it has no notion of a question.
+      Asking it something gets you a plausible continuation of the question, not
+      an answer.</p>
+      <p>The honest metric is <b>perplexity</b>, not vibes: <span id="ppl"></span>
+      on held-out validation. It is fluent in the register it was trained on —
+      judicial opinions and risk-factor sections — and noticeably weaker on open
+      web prose, exactly in proportion to those numbers. Facts it states are
+      <b>not reliable</b>; a model this size stores style far better than truth.</p>
+      <p><code>&lt;|bos|&gt;</code> was never used in training, so "start of doc"
+      prepends <code>&lt;|eos|&gt;</code> instead — the only document boundary the
+      model has seen. Non-ASCII byte tokens are suppressed by default.</p>
+    </div>
+  </details>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let controller = null;
+
+fetch('/health').then(r => r.json()).then(h => {
+  const t = h.training || {};
+  const seen = t.tokens_seen ? (t.tokens_seen / 1e9).toFixed(1) + 'B tokens seen' : '';
+  $('sub').textContent =
+    `${(h.parameters/1e6).toFixed(0)}M params · ${h.device} · ${h.dtype} · ctx ${h.context}`
+    + ` · vocab ${h.vocab_size}` + (seen ? ` · ${seen}` : '');
+  const per = t.best_val_per_source || {};
+  $('ppl').textContent = Object.keys(per).length
+    ? Object.entries(per).map(([k, v]) => `${k} ${Math.exp(v).toFixed(1)}`).join(', ')
+    : 'see docs/05-pretrain.md';
+}).catch(() => $('sub').textContent = 'server not reachable');
+
+document.querySelectorAll('.chip').forEach(c =>
+  c.onclick = () => { $('prompt').value = c.dataset.p; });
+
+function body() {
+  return {
+    prompt: $('prompt').value,
+    max_new_tokens: +$('max_new_tokens').value,
+    temperature: +$('temperature').value,
+    top_p: +$('top_p').value,
+    top_k: +$('top_k').value,
+    repetition_penalty: +$('repetition_penalty').value,
+    document_start: $('document_start').value === 'true',
+  };
+}
+
+async function run() {
+  const out = $('out'), stats = $('stats');
+  out.innerHTML = `<span class="prompt">${$('prompt').value
+      .replace(/[<&]/g, c => ({'<':'&lt;','&':'&amp;'}[c]))}</span>`;
+  const cursor = document.createElement('span');
+  cursor.className = 'cursor';
+  out.appendChild(cursor);
+  $('go').disabled = true; $('stop').disabled = false;
+  stats.textContent = 'generating…';
+
+  controller = new AbortController();
+  const t0 = performance.now();
+  let chars = 0, chunks = 0;
+  try {
+    const res = await fetch('/generate/stream', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body()), signal: controller.signal,
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for (const p of parts) {
+        if (!p.startsWith('data: ')) continue;
+        const msg = JSON.parse(p.slice(6));
+        if (msg.done) continue;
+        chunks++; chars += msg.text.length;
+        cursor.insertAdjacentText('beforebegin', msg.text);
+        const secs = (performance.now() - t0) / 1000;
+        stats.textContent = `${chunks} tok · ${secs.toFixed(1)}s · `
+                          + `${(chunks / secs).toFixed(1)} tok/s`;
+      }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') stats.textContent = 'error: ' + e.message;
+  } finally {
+    cursor.remove();
+    $('go').disabled = false; $('stop').disabled = true; controller = null;
+  }
+}
+
+$('go').onclick = run;
+$('stop').onclick = () => controller && controller.abort();
+$('prompt').addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') run();
+});
+</script>
+</body>
+</html>
