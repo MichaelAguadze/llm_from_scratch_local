@@ -1,0 +1,823 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slm-125m — a language model built from scratch on one desk</title>
+<meta name="description" content="A 126M-parameter Llama-style language model trained from scratch on 3.55B tokens of US case law, SEC filings and web text — on four GPUs in one desktop, in 20 hours. Live demo, real numbers, full method.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📚</text></svg>">
+<style>
+:root {
+  color-scheme: light;
+  --bg:#fbfaf8; --surface-1:#fcfcfb; --surface-2:#f4f1eb; --panel:#ffffff;
+  --text-primary:#161513; --text-secondary:#52514e; --text-muted:#807c73;
+  --line:#e3ded5; --line-strong:#cfc8bb; --accent:#7a4a2b; --accent-ink:#ffffff;
+  --series-1:#2a78d6; --series-2:#eb6834; --series-3:#1baf7a;
+  --good:#008300; --warn:#eda100; --bad:#e34948;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg:#141311; --surface-1:#1a1a19; --surface-2:#201f1c; --panel:#1e1d1a;
+    --text-primary:#f2f0eb; --text-secondary:#c3c2b7; --text-muted:#928d83;
+    --line:#33302b; --line-strong:#474339; --accent:#d99a6c; --accent-ink:#1a1310;
+    --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70;
+    --good:#3fa93f; --warn:#c98500; --bad:#e66767;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:#141311; --surface-1:#1a1a19; --surface-2:#201f1c; --panel:#1e1d1a;
+  --text-primary:#f2f0eb; --text-secondary:#c3c2b7; --text-muted:#928d83;
+  --line:#33302b; --line-strong:#474339; --accent:#d99a6c; --accent-ink:#1a1310;
+  --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70;
+  --good:#3fa93f; --warn:#c98500; --bad:#e66767;
+}
+* { box-sizing:border-box; }
+html { scroll-behavior:smooth; }
+body { margin:0; background:var(--bg); color:var(--text-primary);
+       font:16px/1.65 var(--sans); -webkit-font-smoothing:antialiased; }
+.wrap { max-width:940px; margin:0 auto; padding:0 22px; }
+a { color:inherit; text-decoration-color:var(--line-strong); text-underline-offset:3px; }
+a:hover { text-decoration-color:var(--accent); }
+h1,h2,h3 { line-height:1.2; letter-spacing:-.02em; margin:0; }
+h2 { font-size:26px; margin:0 0 6px; }
+h3 { font-size:16px; margin:0 0 8px; }
+p { margin:0 0 14px; }
+code { font:13.5px var(--mono); background:var(--surface-2); padding:1.5px 5px;
+       border-radius:4px; border:1px solid var(--line); }
+section { padding:56px 0; border-top:1px solid var(--line); }
+.eyebrow { font:600 11.5px var(--sans); letter-spacing:.13em; text-transform:uppercase;
+           color:var(--text-muted); margin-bottom:10px; }
+.lede { font-size:17.5px; color:var(--text-secondary); max-width:66ch; }
+
+/* ---------- header ---------- */
+header { padding:64px 0 44px; }
+.title { font:600 44px/1.05 var(--serif); letter-spacing:-.025em; margin-bottom:14px; }
+.title em { font-style:italic; color:var(--accent); }
+.byline { color:var(--text-muted); font-size:14px; margin-top:22px; }
+.topbar { display:flex; align-items:center; gap:14px; padding:14px 0;
+          font-size:13.5px; color:var(--text-muted); }
+.topbar .spacer { margin-left:auto; }
+#theme { background:none; border:1px solid var(--line); color:var(--text-secondary);
+         border-radius:999px; padding:5px 12px; font-size:12.5px; cursor:pointer; }
+
+/* ---------- stat tiles ---------- */
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+         gap:1px; background:var(--line); border:1px solid var(--line);
+         border-radius:12px; overflow:hidden; margin:30px 0 0; }
+.tile { background:var(--panel); padding:16px 18px; }
+.tile .v { font:600 26px/1.1 var(--serif); letter-spacing:-.02em; }
+.tile .v span { font-size:15px; color:var(--text-secondary); font-weight:400; }
+.tile .k { font-size:12px; color:var(--text-muted); margin-top:5px; }
+
+/* ---------- demo ---------- */
+.demo { background:var(--panel); border:1px solid var(--line); border-radius:14px;
+        padding:20px; }
+.status { display:flex; align-items:center; gap:8px; font-size:13px;
+          color:var(--text-secondary); margin-bottom:14px; flex-wrap:wrap; }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--text-muted);
+       flex:none; }
+.dot.live { background:var(--good); box-shadow:0 0 0 3px color-mix(in srgb,var(--good) 22%,transparent); }
+.dot.off { background:var(--bad); }
+.status .spacer { margin-left:auto; }
+.linkish { background:none; border:0; color:var(--text-muted); font-size:12.5px;
+           cursor:pointer; text-decoration:underline; text-underline-offset:3px;
+           padding:0; font-family:var(--sans); }
+textarea { width:100%; min-height:96px; resize:vertical; color:var(--text-primary);
+           background:var(--surface-1); border:1px solid var(--line);
+           border-radius:9px; padding:11px 12px; font:14px/1.55 var(--mono); }
+textarea:focus,input:focus,select:focus { outline:2px solid var(--accent); outline-offset:1px; }
+.chips { display:flex; gap:6px; flex-wrap:wrap; margin:10px 0 0; }
+.chip { font:400 12.5px var(--sans); padding:5px 11px; border:1px solid var(--line);
+        border-radius:999px; color:var(--text-secondary); background:var(--surface-1);
+        cursor:pointer; }
+.chip:hover { border-color:var(--accent); color:var(--text-primary); }
+.controls { display:grid; grid-template-columns:repeat(auto-fit,minmax(104px,1fr));
+            gap:10px; margin-top:14px; }
+label { display:block; font-size:10.5px; letter-spacing:.07em; text-transform:uppercase;
+        color:var(--text-muted); margin-bottom:4px; }
+input,select { width:100%; padding:6px 8px; font:13px var(--mono);
+               color:var(--text-primary); background:var(--surface-1);
+               border:1px solid var(--line); border-radius:6px; }
+.row { display:flex; align-items:center; gap:10px; margin-top:16px; flex-wrap:wrap; }
+button.primary { background:var(--accent); color:var(--accent-ink); border:0;
+                 border-radius:8px; padding:10px 20px; font:600 14px var(--sans);
+                 cursor:pointer; }
+button.primary:disabled { opacity:.45; cursor:not-allowed; }
+button.ghost { background:transparent; color:var(--text-secondary);
+               border:1px solid var(--line); border-radius:8px; padding:9px 15px;
+               font:400 13.5px var(--sans); cursor:pointer; }
+.meter { margin-left:auto; font:12px var(--mono); color:var(--text-muted); }
+.out { margin-top:16px; background:var(--surface-1); border:1px solid var(--line);
+       border-radius:9px; padding:14px; font:14px/1.65 var(--mono);
+       white-space:pre-wrap; word-wrap:break-word; min-height:90px; }
+.out .p { color:var(--text-muted); }
+.out .cursor { display:inline-block; width:7px; height:15px; vertical-align:-2px;
+       background:var(--accent); animation:blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity:0; } }
+.offline-note { background:var(--surface-2); border:1px solid var(--line);
+       border-left:3px solid var(--warn); border-radius:8px; padding:12px 14px;
+       font-size:13.5px; color:var(--text-secondary); margin-top:14px; }
+.offline-note b { color:var(--text-primary); }
+
+/* ---------- charts ---------- */
+.figure { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+          padding:18px 18px 12px; margin-top:20px; }
+.figure .cap { font-size:13px; color:var(--text-muted); margin-top:10px; }
+.fig-head { display:flex; align-items:baseline; gap:12px; margin-bottom:2px;
+            flex-wrap:wrap; }
+.legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12.5px;
+          color:var(--text-secondary); margin-left:auto; }
+.legend i { display:inline-block; width:16px; height:2px; vertical-align:3px;
+            margin-right:5px; }
+svg { display:block; width:100%; height:auto; overflow:visible; }
+.grid line { stroke:var(--line); stroke-width:1; }
+.axis text { fill:var(--text-muted); font:11px var(--sans); }
+.axis-title { fill:var(--text-muted); font:11px var(--sans); }
+.serieslabel { font:600 11.5px var(--sans); }
+.crosshair { stroke:var(--line-strong); stroke-width:1; }
+.tip { position:absolute; pointer-events:none; background:var(--panel);
+       border:1px solid var(--line-strong); border-radius:8px; padding:8px 10px;
+       font:12px var(--sans); color:var(--text-primary); opacity:0;
+       transition:opacity .1s; box-shadow:0 6px 20px rgba(0,0,0,.13); z-index:5;
+       min-width:150px; }
+.tip .th { font:600 11px var(--sans); color:var(--text-muted); margin-bottom:5px; }
+.tip .tr { display:flex; align-items:center; gap:7px; justify-content:space-between; }
+.tip .tr b { font:600 12px var(--mono); }
+.tip i { display:inline-block; width:9px; height:9px; border-radius:2px; }
+.plotwrap { position:relative; }
+table { width:100%; border-collapse:collapse; font-size:13.5px; }
+th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+th { font:600 11.5px var(--sans); letter-spacing:.06em; text-transform:uppercase;
+     color:var(--text-muted); }
+td.num,th.num { text-align:right; font-family:var(--mono); font-size:13px; }
+tbody tr:last-child td { border-bottom:0; }
+.tablewrap { overflow-x:auto; }
+details.tabletoggle { margin-top:8px; }
+details.tabletoggle summary { cursor:pointer; font-size:12.5px; color:var(--text-muted); }
+
+/* ---------- misc blocks ---------- */
+.cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:20px; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+        padding:18px; }
+.card p:last-child { margin-bottom:0; }
+.card .k { font:12px var(--mono); color:var(--text-muted); }
+.pipeline { display:grid; gap:1px; background:var(--line); border:1px solid var(--line);
+            border-radius:12px; overflow:hidden; }
+.step { background:var(--panel); padding:15px 18px; display:grid;
+        grid-template-columns:26px 1fr auto; gap:14px; align-items:baseline; }
+.step .n { font:600 12px var(--mono); color:var(--text-muted); }
+.step .t { font-size:14.5px; }
+.step .t b { font-weight:600; }
+.step .t span { color:var(--text-secondary); font-size:13.5px; }
+.step .w { font:12.5px var(--mono); color:var(--text-muted); white-space:nowrap; }
+.quote { border-left:3px solid var(--line-strong); padding:2px 0 2px 16px;
+         font:14px/1.7 var(--mono); color:var(--text-secondary); margin:0 0 14px;
+         white-space:pre-wrap; }
+.quote b { color:var(--text-primary); font-weight:400;
+           background:color-mix(in srgb,var(--accent) 13%,transparent); }
+footer { padding:44px 0 70px; color:var(--text-muted); font-size:13.5px;
+         border-top:1px solid var(--line); }
+@media (max-width:640px) {
+  .title { font-size:33px; }
+  h2 { font-size:22px; }
+  section { padding:44px 0; }
+}
+</style>
+</head>
+<body>
+
+<div class="wrap topbar">
+  <span>slm-125m-base</span>
+  <span class="spacer"></span>
+  <a href="#demo">demo</a>
+  <a href="#results">results</a>
+  <a href="#method">method</a>
+  <button id="theme" type="button">theme</button>
+</div>
+
+<header class="wrap">
+  <div class="eyebrow">Trained from scratch · August 2026</div>
+  <h1 class="title">A language model built<br>on <em>one desk</em>, in 20 hours.</h1>
+  <p class="lede">
+    126 million parameters, trained from random initialisation on 3.55 billion
+    tokens of US case law, SEC filings and educational web text. No pretrained
+    weights, no cloud, no API — four RTX A6000s in a desktop computer, and a
+    tokenizer, corpus and training loop written from the ground up.
+    You can type into it below.
+  </p>
+  <div class="tiles">
+    <div class="tile"><div class="v">126<span>M</span></div><div class="k">parameters</div></div>
+    <div class="tile"><div class="v">3.55<span>B</span></div><div class="k">training tokens</div></div>
+    <div class="tile"><div class="v">17.7<span>B</span></div><div class="k">tokens seen (5 epochs)</div></div>
+    <div class="tile"><div class="v">20.0<span>h</span></div><div class="k">wall clock, 4× A6000</div></div>
+    <div class="tile"><div class="v">12.75</div><div class="k">held-out perplexity</div></div>
+  </div>
+  <div class="byline">
+    Built by Michael Aguadze · <a href="https://github.com/MichaelAguadze/llm_from_scratch_local">source and phase-by-phase writeups on GitHub</a>
+  </div>
+</header>
+
+<!-- ============================== DEMO ============================== -->
+<section id="demo" class="wrap">
+  <div class="eyebrow">Try it</div>
+  <h2>Type something. It continues.</h2>
+  <p class="lede" style="margin-bottom:22px;">
+    This is a <b>base completion model</b>, not a chatbot. It has never been shown
+    an instruction or a conversation — it only knows how to carry on text. Ask it
+    a question and it will continue the question, not answer it. That is the
+    honest behaviour of a model at this stage, and it is what you are looking at.
+  </p>
+
+  <div class="demo">
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <span id="statusText">checking the model…</span>
+      <span class="spacer"></span>
+      <button class="linkish" id="editEndpoint" type="button">endpoint</button>
+    </div>
+
+    <label for="prompt">Prompt</label>
+    <textarea id="prompt" spellcheck="false">The Court held that</textarea>
+    <div class="chips">
+      <button class="chip" data-p="The Court held that">case law</button>
+      <button class="chip" data-p="Item 1A. Risk Factors">SEC filing</button>
+      <button class="chip" data-p="IN THE UNITED STATES DISTRICT COURT FOR THE">caption</button>
+      <button class="chip" data-p="Photosynthesis is">general knowledge</button>
+      <button class="chip" data-p="What is the capital of France?">a question (watch it fail)</button>
+    </div>
+
+    <div class="controls">
+      <div><label for="max_new_tokens">max tokens</label>
+           <input id="max_new_tokens" type="number" value="200" min="1" max="1023"></div>
+      <div><label for="temperature">temperature</label>
+           <input id="temperature" type="number" value="0.8" step="0.05" min="0.05" max="2"></div>
+      <div><label for="top_p">top-p</label>
+           <input id="top_p" type="number" value="0.95" step="0.01" min="0.01" max="1"></div>
+      <div><label for="top_k">top-k</label>
+           <input id="top_k" type="number" value="50" min="0"></div>
+      <div><label for="repetition_penalty">rep. penalty</label>
+           <input id="repetition_penalty" type="number" value="1.1" step="0.05" min="1" max="2"></div>
+      <div><label for="document_start">start of doc</label>
+           <select id="document_start">
+             <option value="false">no</option>
+             <option value="true">yes</option>
+           </select></div>
+    </div>
+
+    <div class="row">
+      <button class="primary" id="go" disabled>Generate</button>
+      <button class="ghost" id="stop" disabled>Stop</button>
+      <span class="meter" id="meter"></span>
+    </div>
+
+    <div class="out" id="out"><span class="p">The Court held that</span></div>
+    <div id="offlineNote"></div>
+  </div>
+</section>
+
+<!-- ============================== RESULTS ============================== -->
+<section id="results" class="wrap">
+  <div class="eyebrow">Results</div>
+  <h2>What 20 hours of training buys</h2>
+  <p class="lede">
+    The honest measure of a base model is <b>perplexity</b> — how surprised it is
+    by text it has never seen. Lower is better; 1.0 would be perfect prediction.
+    Every number here is read straight from the training log, including the ones
+    that are unflattering.
+  </p>
+
+  <div class="figure">
+    <div class="fig-head">
+      <h3>Validation perplexity, by source</h3>
+      <div class="legend" id="legend1"></div>
+    </div>
+    <div class="plotwrap" id="plot1"><div class="tip" id="tip1"></div></div>
+    <div class="cap">
+      Held-out perplexity every 500 steps, log scale. Each vertical rule is an
+      epoch boundary. Epoch 1 does most of the work; epochs 2–5 buy a further 18 %
+      for four times the compute.
+    </div>
+    <details class="tabletoggle">
+      <summary>Show as a table</summary>
+      <div class="tablewrap"><table id="table1"></table></div>
+    </details>
+  </div>
+
+  <div class="figure">
+    <div class="fig-head"><h3>Training loss</h3></div>
+    <div class="plotwrap" id="plot2"><div class="tip" id="tip2"></div></div>
+    <div class="cap">
+      Cross-entropy on the training batch, averaged over each ~300-step window of
+      the log — which smooths the opening 9.85 away into a first plotted point of
+      6.07, ending at 2.05. Note what does <em>not</em> happen at the epoch rules:
+      nothing. The loss crosses each boundary smoothly, which is what you want —
+      a drop as the model starts its second pass over the same data would be
+      memorisation, not learning.
+    </div>
+  </div>
+
+  <div class="cols" style="margin-top:22px;">
+    <div class="card">
+      <h3>It speaks legal fluently</h3>
+      <div class="quote"><b>IN THE UNITED STATES DISTRICT COURT FOR THE</b> WESTERN DISTRICT OF NEBRASKA … (a) As to the judgment of July 29, 1995 in favor of the plaintiff, and the order thereon, is reversed. The case is remanded for further proceedings consistent with this opinion.</div>
+      <p style="font-size:14px;color:var(--text-secondary);margin:0;">
+        Caption, disposition, remand — the structure of an opinion is there,
+        because 34 % of its diet was case law.
+      </p>
+    </div>
+    <div class="card">
+      <h3>It is confidently wrong about facts</h3>
+      <div class="quote"><b>What is the capital of France?</b> In the French Revolution of 1789, the monarch was crowned as king on December 20. The monarchy was ruled by King Louis XIV who had ruled France since 1795.</div>
+      <p style="font-size:14px;color:var(--text-secondary);margin:0;">
+        Louis XIV did not rule from 1795, and the question never gets answered. At
+        126M parameters, style is learned far better than truth.
+      </p>
+    </div>
+  </div>
+
+  <div class="figure">
+    <h3>Final numbers</h3>
+    <div class="tablewrap">
+    <table>
+      <thead><tr><th>Source</th><th class="num">share of corpus</th><th class="num">val perplexity</th><th>read</th></tr></thead>
+      <tbody>
+        <tr><td>SEC filings</td><td class="num">39.4 %</td><td class="num">4.62</td><td>flattering — filings repeat themselves verbatim</td></tr>
+        <tr><td>US case law</td><td class="num">34.5 %</td><td class="num">8.28</td><td>the model's strongest honest register</td></tr>
+        <tr><td>fineweb-edu</td><td class="num">26.0 %</td><td class="num">19.63</td><td>open web prose — the weakest, by 2.4×</td></tr>
+        <tr><td><b>clean average</b></td><td class="num">—</td><td class="num"><b>12.75</b></td><td>case law + fineweb-edu only; the number that drove early stopping</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <div class="cap">
+      SEC is excluded from the headline on purpose: 19.3 % of its validation
+      40-grams also occur in its training text, because annual filings recite
+      identical statutory language. That is corpus redundancy, not a broken split
+      — but it makes SEC's perplexity optimistic and unfit to judge the model by.
+    </div>
+  </div>
+</section>
+
+<!-- ============================== METHOD ============================== -->
+<section id="method" class="wrap">
+  <div class="eyebrow">Method</div>
+  <h2>Six phases, each one documented before it ran</h2>
+  <p class="lede" style="margin-bottom:22px;">
+    Every phase produced a markdown writeup with its real measurements — including
+    the ones that contradicted the plan. Wall clocks below are actual, not estimated.
+  </p>
+
+  <div class="pipeline">
+    <div class="step"><span class="n">0</span>
+      <span class="t"><b>Storage, environment, smoke test</b><br>
+      <span>Pin 120 GB of scratch, verify 4 GPUs and bf16, run the whole pipeline end to end on 1,000 documents.</span></span>
+      <span class="w">~1 h</span></div>
+    <div class="step"><span class="n">1</span>
+      <span class="t"><b>Stream and clean</b><br>
+      <span>1.42M documents pulled from HuggingFace and filtered — line length, non-alphanumeric ratio, repetition, language, OCR garble — to 5.25B tokens of gzipped text.</span></span>
+      <span class="w">33 min</span></div>
+    <div class="step"><span class="n">2</span>
+      <span class="t"><b>Deduplicate and decontaminate</b><br>
+      <span>MinHash near-duplicate removal, then an n-gram strip against LexGLUE and CaseHOLD so the benchmarks stay honest. 122,245 documents dropped.</span></span>
+      <span class="w">15 min</span></div>
+    <div class="step"><span class="n">3</span>
+      <span class="t"><b>Train the tokenizer</b><br>
+      <span>A 16,384-token byte-level BPE fitted on a 3 GB sample. Measured compression: 4.65 characters per token — not the 4.0 the plan assumed.</span></span>
+      <span class="w">0.9 min</span></div>
+    <div class="step"><span class="n">4</span>
+      <span class="t"><b>Tokenize and pack</b><br>
+      <span>Everything encoded to uint16, EOS-separated, packed into 1024-token windows, split 99/1 by document so no validation text has its context in training.</span></span>
+      <span class="w">5.9 min</span></div>
+    <div class="step"><span class="n">5</span>
+      <span class="t"><b>Pretrain</b><br>
+      <span>33,715 steps of 524,288 tokens across 4 GPUs, bf16, cosine LR spanning all five epochs, per-source validation every 500 steps.</span></span>
+      <span class="w">20.0 h</span></div>
+    <div class="step"><span class="n">6</span>
+      <span class="t"><b>Serve</b><br>
+      <span>FastAPI with streaming, 628 MB of VRAM, 115 tokens/second — and the tunnel that put it in front of you.</span></span>
+      <span class="w">live</span></div>
+  </div>
+
+  <div class="cols" style="margin-top:24px;">
+    <div class="card">
+      <h3>Architecture</h3>
+      <p class="k">Llama-style decoder</p>
+      <p style="font-size:14px;color:var(--text-secondary);">
+        12 layers · 768 hidden · 12 heads · SwiGLU MLP (3072 inner) · RMSNorm
+        pre-norm · RoPE θ=10,000 · 1024 context · 16,384 vocab · tied embeddings ·
+        bf16 with FlashAttention-2 kernels.
+      </p>
+    </div>
+    <div class="card">
+      <h3>Training</h3>
+      <p class="k">4× RTX A6000, DDP over PCIe</p>
+      <p style="font-size:14px;color:var(--text-secondary);">
+        AdamW β(0.9, 0.95) · weight decay 0.1 on matrices only · grad clip 1.0 ·
+        LR 6e-4 → 6e-5 cosine over all 33,715 steps after 500 warmup ·
+        140 tokens per parameter · 261k tokens/second sustained.
+      </p>
+    </div>
+    <div class="card">
+      <h3>Inference</h3>
+      <p class="k">one GPU, barely</p>
+      <p style="font-size:14px;color:var(--text-secondary);">
+        628 MiB resident of 49 GB · 115 tokens/s · 2.2 s for a 256-token
+        completion · 15–25 ms to first token locally, ~106 ms through the tunnel ·
+        25.9 tokens/s on CPU alone, which is still faster than you can read.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== HONEST ============================== -->
+<section class="wrap">
+  <div class="eyebrow">Caveats</div>
+  <h2>What this model is not</h2>
+  <div class="cols">
+    <div class="card">
+      <h3>Not an assistant</h3>
+      <p style="font-size:14.5px;color:var(--text-secondary);margin:0;">
+        No instruction tuning, no RLHF, no chat template. The tokenizer reserves
+        <code>&lt;|user|&gt;</code> and <code>&lt;|assistant|&gt;</code> tokens
+        that have never been trained on a single conversation.
+      </p>
+    </div>
+    <div class="card">
+      <h3>Not a source of facts</h3>
+      <p style="font-size:14.5px;color:var(--text-secondary);margin:0;">
+        126M parameters is roughly 1/1000th of a frontier model. It has learned the
+        shape of legal and financial prose far better than the content of the world.
+        Assume anything it states is invented.
+      </p>
+    </div>
+    <div class="card">
+      <h3>Not comparable on perplexity</h3>
+      <p style="font-size:14.5px;color:var(--text-secondary);margin:0;">
+        12.75 is measured against a bespoke 16,384-token vocabulary. Perplexity
+        depends on the tokenizer, so comparing this number to GPT-2's or any other
+        model's would be meaningless without converting to bits per byte first.
+      </p>
+    </div>
+    <div class="card">
+      <h3>Not always awake</h3>
+      <p style="font-size:14.5px;color:var(--text-secondary);margin:0;">
+        The demo runs on a desktop computer behind a tunnel. When that machine is
+        off, or training something else, the demo goes offline and the samples
+        above are all that's left.
+      </p>
+    </div>
+  </div>
+</section>
+
+<footer class="wrap">
+  Built from scratch by Michael Aguadze, August 2026 · corpus from
+  HFforLegal/case-law, PleIAs/SEC and HuggingFaceFW/fineweb-edu ·
+  <a href="https://github.com/MichaelAguadze/llm_from_scratch_local">code, phase writeups and the training log</a>
+</footer>
+
+<script src="config.js"></script>
+<script src="data.js"></script>
+<script>
+/* ------------------------------------------------------------------ theme -- */
+const root = document.documentElement;
+const saved = localStorage.getItem('slm-theme');
+if (saved) root.setAttribute('data-theme', saved);
+document.getElementById('theme').onclick = () => {
+  const dark = getComputedStyle(root).getPropertyValue('--bg').trim() === '#141311';
+  const next = dark ? 'light' : 'dark';
+  root.setAttribute('data-theme', next);
+  localStorage.setItem('slm-theme', next);
+  drawAll();
+};
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawAll);
+
+/* ------------------------------------------------------------------ charts -- */
+const EPOCH = 6743;                       // steps per epoch, for the boundary rules
+const css = n => getComputedStyle(root).getPropertyValue(n).trim();
+const SVG = 'http://www.w3.org/2000/svg';
+const el = (t, a) => { const e = document.createElementNS(SVG, t);
+  for (const k in a) e.setAttribute(k, a[k]); return e; };
+
+const SERIES = [
+  { key:'case-law',    idx:1, name:'case law' },
+  { key:'fineweb-edu', idx:2, name:'fineweb-edu' },
+  { key:'sec',         idx:3, name:'SEC filings' },
+];
+
+function drawPPL() {
+  const host = document.getElementById('plot1');
+  host.querySelectorAll('svg').forEach(n => n.remove());
+  const tip = document.getElementById('tip1');
+  const W = 880, H = 330, m = { t:14, r:104, b:34, l:44 };
+  const data = window.SLM_EVALS;
+  const xs = data.map(d => d[0]);
+  const x = s => m.l + (s - 0) / (33715 - 0) * (W - m.l - m.r);
+  const lo = 4, hi = 100;                          // log scale, perplexity
+  const y = v => m.t + (Math.log(hi) - Math.log(v)) / (Math.log(hi) - Math.log(lo))
+                       * (H - m.t - m.b);
+  const svg = el('svg', { viewBox:`0 0 ${W} ${H}`, role:'img',
+    'aria-label':'Validation perplexity by source over 33,715 training steps, log scale' });
+
+  const grid = el('g', { class:'grid' });
+  [5, 10, 20, 50, 100].forEach(v => {
+    grid.appendChild(el('line', { x1:m.l, x2:W - m.r, y1:y(v), y2:y(v) }));
+    const t = el('text', { x:m.l - 9, y:y(v) + 4, 'text-anchor':'end', class:'axis' });
+    t.textContent = v; grid.appendChild(t);
+  });
+  svg.appendChild(grid);
+  const ax = el('g', { class:'axis' });
+  for (let e = 1; e <= 4; e++) {                   // epoch boundaries
+    ax.appendChild(el('line', { x1:x(e * EPOCH), x2:x(e * EPOCH), y1:m.t, y2:H - m.b,
+      stroke:css('--line'), 'stroke-width':1 }));
+  }
+  [0, 6743, 13486, 20229, 26972, 33715].forEach((s, i) => {
+    const t = el('text', { x:x(s), y:H - m.b + 18, 'text-anchor':'middle', class:'axis' });
+    t.textContent = i === 0 ? '0' : 'ep ' + i; ax.appendChild(t);
+  });
+  const yt = el('text', { x:m.l - 34, y:m.t - 2, class:'axis-title' });
+  yt.textContent = 'ppl'; ax.appendChild(yt);
+  svg.appendChild(ax);
+
+  SERIES.forEach((s, si) => {
+    const col = css('--series-' + s.idx);
+    const pts = data.map(d => [x(d[0]), y(d[si + 1])]);
+    svg.appendChild(el('path', { d:'M' + pts.map(p => p.join(' ')).join('L'),
+      fill:'none', stroke:col, 'stroke-width':2, 'stroke-linejoin':'round',
+      'stroke-linecap':'round' }));
+    const last = data[data.length - 1];
+    const lbl = el('text', { x:W - m.r + 8, y:y(last[si + 1]) + 4, class:'serieslabel',
+      fill:col });
+    lbl.textContent = last[si + 1].toFixed(2);
+    svg.appendChild(lbl);
+    const nm = el('text', { x:W - m.r + 8, y:y(last[si + 1]) + 18, class:'axis',
+      fill:css('--text-muted') });
+    nm.textContent = s.name;
+    svg.appendChild(nm);
+  });
+
+  // crosshair + tooltip
+  const ch = el('line', { class:'crosshair', y1:m.t, y2:H - m.b, opacity:0 });
+  svg.appendChild(ch);
+  const dots = SERIES.map(s => {
+    const c = el('circle', { r:4.5, fill:css('--series-' + s.idx),
+      stroke:css('--panel'), 'stroke-width':2, opacity:0 });
+    svg.appendChild(c); return c;
+  });
+  const hit = el('rect', { x:m.l, y:m.t, width:W - m.l - m.r, height:H - m.t - m.b,
+    fill:'transparent' });
+  svg.appendChild(hit);
+  const move = ev => {
+    const r = svg.getBoundingClientRect();
+    const px = (ev.clientX - r.left) / r.width * W;
+    let best = 0, bd = 1e9;
+    data.forEach((d, i) => { const dd = Math.abs(x(d[0]) - px); if (dd < bd) { bd = dd; best = i; } });
+    const d = data[best];
+    ch.setAttribute('x1', x(d[0])); ch.setAttribute('x2', x(d[0])); ch.setAttribute('opacity', 1);
+    dots.forEach((c, si) => { c.setAttribute('cx', x(d[0])); c.setAttribute('cy', y(d[si + 1]));
+      c.setAttribute('opacity', 1); });
+    tip.style.opacity = 1;
+    tip.innerHTML = `<div class="th">step ${d[0].toLocaleString()} · epoch ${(d[0] / EPOCH).toFixed(2)}</div>` +
+      SERIES.map((s, si) => `<div class="tr"><span><i style="background:${css('--series-' + s.idx)}"></i>${s.name}</span><b>${d[si + 1].toFixed(2)}</b></div>`).join('');
+    const left = Math.min(Math.max(0, (x(d[0]) / W) * r.width - 78), r.width - 170);
+    tip.style.left = left + 'px';
+    tip.style.top = '6px';
+  };
+  hit.addEventListener('pointermove', move);
+  hit.addEventListener('pointerleave', () => {
+    tip.style.opacity = 0; ch.setAttribute('opacity', 0);
+    dots.forEach(c => c.setAttribute('opacity', 0));
+  });
+  host.insertBefore(svg, tip);
+
+  document.getElementById('legend1').innerHTML = SERIES.map(s =>
+    `<span><i style="background:${css('--series-' + s.idx)}"></i>${s.name}</span>`).join('');
+
+  const rows = window.SLM_EVALS.filter((_, i) => i % 8 === 0 || i === window.SLM_EVALS.length - 1);
+  document.getElementById('table1').innerHTML =
+    '<thead><tr><th class="num">step</th>' + SERIES.map(s => `<th class="num">${s.name}</th>`).join('') +
+    '</tr></thead><tbody>' + rows.map(d =>
+      `<tr><td class="num">${d[0].toLocaleString()}</td><td class="num">${d[1]}</td><td class="num">${d[2]}</td><td class="num">${d[3]}</td></tr>`).join('') +
+    '</tbody>';
+}
+
+function drawLoss() {
+  const host = document.getElementById('plot2');
+  host.querySelectorAll('svg').forEach(n => n.remove());
+  const tip = document.getElementById('tip2');
+  const W = 880, H = 230, m = { t:14, r:30, b:34, l:44 };
+  const data = window.SLM_LOSS;
+  const x = s => m.l + s / 33715 * (W - m.l - m.r);
+  const lo = 1.8, hi = 6.5;
+  const y = v => m.t + (hi - Math.min(hi, v)) / (hi - lo) * (H - m.t - m.b);
+  const svg = el('svg', { viewBox:`0 0 ${W} ${H}`, role:'img',
+    'aria-label':'Training loss falling from 6.1 to 2.05 over 33,715 steps' });
+  const grid = el('g', { class:'grid' });
+  [2, 3, 4, 5, 6].forEach(v => {
+    grid.appendChild(el('line', { x1:m.l, x2:W - m.r, y1:y(v), y2:y(v) }));
+    const t = el('text', { x:m.l - 9, y:y(v) + 4, 'text-anchor':'end', class:'axis' });
+    t.textContent = v.toFixed(1); grid.appendChild(t);
+  });
+  svg.appendChild(grid);
+  const ax = el('g', { class:'axis' });
+  for (let e = 1; e <= 4; e++)
+    ax.appendChild(el('line', { x1:x(e * EPOCH), x2:x(e * EPOCH), y1:m.t, y2:H - m.b,
+      stroke:css('--line'), 'stroke-width':1 }));
+  [0, 6743, 13486, 20229, 26972, 33715].forEach((s, i) => {
+    const t = el('text', { x:x(s), y:H - m.b + 18, 'text-anchor':'middle', class:'axis' });
+    t.textContent = i === 0 ? '0' : 'ep ' + i; ax.appendChild(t);
+  });
+  const yt = el('text', { x:m.l - 34, y:m.t - 2, class:'axis-title' });
+  yt.textContent = 'loss'; ax.appendChild(yt);
+  svg.appendChild(ax);
+  const col = css('--series-1');
+  svg.appendChild(el('path', { d:'M' + data.map(d => `${x(d[0])} ${y(d[1])}`).join('L'),
+    fill:'none', stroke:col, 'stroke-width':2, 'stroke-linejoin':'round',
+    'stroke-linecap':'round' }));
+
+  const ch = el('line', { class:'crosshair', y1:m.t, y2:H - m.b, opacity:0 });
+  svg.appendChild(ch);
+  const dot = el('circle', { r:4.5, fill:col, stroke:css('--panel'), 'stroke-width':2, opacity:0 });
+  svg.appendChild(dot);
+  const hit = el('rect', { x:m.l, y:m.t, width:W - m.l - m.r, height:H - m.t - m.b, fill:'transparent' });
+  svg.appendChild(hit);
+  hit.addEventListener('pointermove', ev => {
+    const r = svg.getBoundingClientRect();
+    const px = (ev.clientX - r.left) / r.width * W;
+    let best = 0, bd = 1e9;
+    data.forEach((d, i) => { const dd = Math.abs(x(d[0]) - px); if (dd < bd) { bd = dd; best = i; } });
+    const d = data[best];
+    ch.setAttribute('x1', x(d[0])); ch.setAttribute('x2', x(d[0])); ch.setAttribute('opacity', 1);
+    dot.setAttribute('cx', x(d[0])); dot.setAttribute('cy', y(d[1])); dot.setAttribute('opacity', 1);
+    tip.style.opacity = 1;
+    tip.innerHTML = `<div class="th">step ${d[0].toLocaleString()}</div>` +
+      `<div class="tr"><span><i style="background:${col}"></i>train loss</span><b>${d[1].toFixed(3)}</b></div>`;
+    tip.style.left = Math.min(Math.max(0, (x(d[0]) / W) * r.width - 70), r.width - 160) + 'px';
+    tip.style.top = '6px';
+  });
+  hit.addEventListener('pointerleave', () => {
+    tip.style.opacity = 0; ch.setAttribute('opacity', 0); dot.setAttribute('opacity', 0);
+  });
+  host.insertBefore(svg, tip);
+}
+
+function drawAll() { drawPPL(); drawLoss(); }
+drawAll();
+addEventListener('resize', () => { clearTimeout(window._rz);
+  window._rz = setTimeout(drawAll, 150); });
+
+/* -------------------------------------------------------------------- demo -- */
+const $ = id => document.getElementById(id);
+const API = () => (localStorage.getItem('slm-endpoint') || window.SLM_API || '').replace(/\/$/, '');
+let controller = null;
+
+const SAMPLES = {
+  'The Court held that': ` the evidence of the plaintiff's "intent" to deceive and defraud his wife was insufficient to support a finding of fraud against the plaintiff and in favor of the defendant on the issue of punitive damages.`,
+  'Item 1A. Risk Factors': ` - Risks Associated with the Market for the Company's Common Stock and Related Stockholder Matters - Nasdaq Delisting and Potential Dilution. The Company's Common Stock trades on the Nasdaq National Market under the symbol "W`,
+  'IN THE UNITED STATES DISTRICT COURT FOR THE': ` WESTERN DISTRICT OF NEBRASKA ... (a) As to the judgment of July 29, 1995 in favor of the plaintiff, and the order thereon, is reversed. The case is remanded for further proceedings consistent with this opinion.`,
+  'Photosynthesis is': ` the process that leads to photosynthesis. The process is described by Photosynthesis. Photosynthesis is used to make energy, which is then converted into chemical energy.`,
+  'What is the capital of France?': ` In the French Revolution of 1789, the monarch was crowned as king on December 20. The monarchy was ruled by King Louis XIV who had ruled France since 1795.`,
+};
+
+function setStatus(state, text) {
+  $('dot').className = 'dot' + (state ? ' ' + state : '');
+  $('statusText').textContent = text;
+}
+
+async function checkHealth() {
+  if (!API()) { offline('No endpoint is configured.'); return; }
+  try {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 6000);
+    const r = await fetch(API() + '/health', { signal:c.signal });
+    clearTimeout(t);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const h = await r.json();
+    setStatus('live', `live · ${(h.parameters / 1e6).toFixed(0)}M params on ${h.device} · `
+      + `${h.dtype} · ${h.context}-token context`);
+    $('go').disabled = false;
+    $('offlineNote').innerHTML = '';
+  } catch (e) {
+    offline(e.name === 'AbortError' ? 'The desktop did not answer in time.'
+                                    : 'The desktop is not reachable right now.');
+  }
+}
+
+function offline(why) {
+  setStatus('off', 'demo offline');
+  $('go').disabled = true;
+  $('offlineNote').innerHTML =
+    `<div class="offline-note"><b>The model is asleep.</b> ${why} This demo is a
+     tunnel to a desktop computer, not a hosted service — when that machine is off
+     or busy training, there is nothing to talk to. The completions below are real
+     output from the same weights, recorded while it was awake. Pick a preset to
+     see one.</div>`;
+}
+
+function body() {
+  return {
+    prompt: $('prompt').value,
+    max_new_tokens: +$('max_new_tokens').value,
+    temperature: +$('temperature').value,
+    top_p: +$('top_p').value,
+    top_k: +$('top_k').value,
+    repetition_penalty: +$('repetition_penalty').value,
+    document_start: $('document_start').value === 'true',
+  };
+}
+
+const esc = s => s.replace(/[<&]/g, c => ({ '<':'&lt;', '&':'&amp;' }[c]));
+
+function showSample() {
+  const p = $('prompt').value.trim();
+  const s = SAMPLES[p];
+  if (!s) return false;
+  $('out').innerHTML = `<span class="p">${esc(p)}</span>`;
+  $('meter').textContent = 'recorded sample';
+  let i = 0;
+  clearInterval(window._typer);
+  window._typer = setInterval(() => {           // replay it at the model's real speed
+    if (i >= s.length) { clearInterval(window._typer); return; }
+    $('out').insertAdjacentText('beforeend', s.slice(i, i + 3));
+    i += 3;
+  }, 26);
+  return true;
+}
+
+async function run() {
+  const out = $('out'), meter = $('meter');
+  out.innerHTML = `<span class="p">${esc($('prompt').value)}</span>`;
+  const cursor = document.createElement('span');
+  cursor.className = 'cursor';
+  out.appendChild(cursor);
+  $('go').disabled = true; $('stop').disabled = false;
+  meter.textContent = 'generating…';
+  controller = new AbortController();
+  const t0 = performance.now();
+  let n = 0;
+  try {
+    const res = await fetch(API() + '/generate/stream', {
+      method:'POST', headers:{ 'Content-Type':'application/json' },
+      body:JSON.stringify(body()), signal:controller.signal,
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream:true });
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for (const part of parts) {
+        if (!part.startsWith('data: ')) continue;
+        const msg = JSON.parse(part.slice(6));
+        if (msg.done) continue;
+        n++;
+        cursor.insertAdjacentText('beforebegin', msg.text);
+        const secs = (performance.now() - t0) / 1000;
+        meter.textContent = `${n} tok · ${secs.toFixed(1)}s · ${(n / secs).toFixed(0)} tok/s`;
+      }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      meter.textContent = '';
+      offline('The connection dropped mid-generation.');
+      if (!showSample()) $('out').innerHTML +=
+        `\n\n<span class="p">— the model went offline. Try a preset prompt for a recorded sample.</span>`;
+    }
+  } finally {
+    cursor.remove();
+    $('stop').disabled = true;
+    $('go').disabled = $('dot').classList.contains('off');
+    controller = null;
+  }
+}
+
+document.querySelectorAll('.chip').forEach(c => c.onclick = () => {
+  $('prompt').value = c.dataset.p;
+  if ($('dot').classList.contains('off')) showSample();
+});
+$('go').onclick = run;
+$('stop').onclick = () => controller && controller.abort();
+$('prompt').addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !$('go').disabled) run();
+});
+$('editEndpoint').onclick = () => {
+  const cur = localStorage.getItem('slm-endpoint') || window.SLM_API || '';
+  const next = prompt('Inference endpoint (blank to restore the default):', cur);
+  if (next === null) return;
+  if (next.trim()) localStorage.setItem('slm-endpoint', next.trim());
+  else localStorage.removeItem('slm-endpoint');
+  setStatus('', 'checking the model…');
+  checkHealth();
+};
+
+checkHealth();
+setInterval(checkHealth, 60000);   // the tunnel comes and goes; keep the badge honest
+</script>
+</body>
+</html>

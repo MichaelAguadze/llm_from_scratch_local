@@ -148,12 +148,92 @@ WantedBy=default.target
 `systemctl --user enable --now slm`, then `loginctl enable-linger michael` if it
 should survive logout.
 
+## Public access (Cloudflare Quick Tunnel)
+
+This machine is behind NAT on `192.168.2.17` with ufw active, so port forwarding
+is not the route. `cloudflared` dials out and Cloudflare terminates TLS:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8000
+# -> https://<random-words>.trycloudflare.com, printed in the log
+```
+
+Run detached, logging to `$SLM_ROOT/logs/06-tunnel.log`. No account, no domain,
+no inbound firewall change. **The URL is ephemeral** — a new one is issued every
+time `cloudflared` restarts, and the tunnel dies with the process.
+
+Measured through the tunnel (vs local in the table above):
+
+| Metric | Local | Via tunnel |
+|---|---|---|
+| `GET /` | — | 237 ms |
+| 128-token completion | 1.11 s | 1.11 s |
+| time to first token | 15–25 ms | **106 ms** |
+| tokens/s | 115 | 115 |
+
+Streaming survives the hop: the `X-Accel-Buffering: no` header keeps Cloudflare
+from buffering the SSE stream, so tokens still arrive one at a time. The extra
+~85 ms of TTFT is round-trip to the edge and back, not throughput loss.
+
+To take it down: `pkill -f "cloudflared tunnel"`. The server keeps running on
+localhost.
+
+## The public site (GitHub Pages)
+
+`site/` is a three-file static site — `index.html`, `data.js`, `config.js` — with
+no build step, no dependencies and no external requests. `.github/workflows/pages.yml`
+publishes it on every push to `main` that touches `site/`.
+
+It tells the project's story (corpus → tokenizer → training → results), and its
+demo panel talks to the tunnel above. Two things make that work:
+
+**CORS.** The Pages origin is not the tunnel origin, so the browser preflights
+every `/generate` call. `serve.py` now mounts `CORSMiddleware` with
+`allow_origins=["*"]` — wide open on purpose, because the server is already
+unauthenticated and public, so an allowlist would gate nothing the URL does not
+already gate. Verified through the tunnel with an explicit `Origin:` header:
+preflight `200` with `access-control-allow-origin: *`, then the real POST the same.
+
+**The URL moves.** `site/config.js` holds `window.SLM_API` as a one-line edit,
+and the demo panel's "endpoint" link lets any visitor point their own browser at
+a different backend (kept in their `localStorage`). Every time `cloudflared`
+restarts, edit that line and push.
+
+**Offline is the default state, so it is designed for.** The page polls
+`/health` on load and every 60 s. Live → a green badge with the real device,
+dtype and parameter count read from the server. Not live → the Generate button
+disables, an explanation replaces it ("this is a tunnel to a desktop, not a
+hosted service"), and the preset prompts replay **recorded real completions**
+from these weights instead. A visitor who arrives while the desktop is off still
+sees what the model does; nothing is faked as live.
+
+The charts (validation perplexity per source, training loss) are hand-rolled SVG
+built from `logs/05-pretrain.log` at Phase 6 — 67 eval points and 112 downsampled
+loss points, inlined into `data.js`. Palette validated for colour-blind
+separation in both light and dark modes; each line is direct-labelled with its
+final value, and the perplexity chart carries a table view for screen readers.
+
+One thing the charts made visible that the log did not: **the training loss
+crosses every epoch boundary smoothly.** No step down at 6,743 / 13,486 / 20,229
+/ 26,972. That is the per-epoch reshuffle doing its job — a drop as the model
+began a second pass over the same windows would have been memorisation.
+
 ## Security
 
-The server has **no auth and no rate limit**. It binds `127.0.0.1` deliberately.
-Bind `0.0.0.0` only for a trusted LAN; anything beyond that wants a tunnel with
-auth in front. Nothing about this model is dangerous, but an open port that
-executes arbitrary GPU work on request is.
+The server has **no auth and no rate limit** — a deliberate choice for this
+deployment, not an oversight. While the tunnel is up, anyone who has the URL can
+run unlimited generation on GPU 0. The realistic exposure:
+
+- Random URL, unlisted and unindexed, so discovery is the only real barrier.
+  It holds until the link is posted somewhere crawlable.
+- A single `threading.Lock` serialises generation, so the failure mode of abuse
+  is a queue, not a meltdown; `max_new_tokens` is capped at 1023 by the schema.
+- No filesystem or shell reachable from any route. The blast radius is GPU time
+  and whatever the model says.
+
+Kill the tunnel when the demo is over rather than leaving it up indefinitely.
+If it needs to live longer, the upgrade is a named tunnel with Cloudflare Access
+in front, or a bearer token checked in `serve.py`.
 
 ## Still optional
 

@@ -24,6 +24,7 @@ from pathlib import Path
 
 import torch
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -79,6 +80,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="slm-125m-base", lifespan=lifespan)
+
+# The GitHub Pages site is a different origin from the tunnel, so the browser
+# preflights every /generate call. Wide open because the server is already
+# unauthenticated public — an origin allowlist would gate nothing that the URL
+# does not already gate, and would only break curl-less debugging.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
 
 
 class GenRequest(BaseModel):
